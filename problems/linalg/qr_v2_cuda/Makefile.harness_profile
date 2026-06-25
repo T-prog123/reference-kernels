@@ -1,0 +1,32 @@
+KERNEL ?= copy_stub
+
+NVCC ?= nvcc
+CXXFLAGS ?= -O3 -std=c++17
+NVCCFLAGS ?= -O3 -std=c++17 --use_fast_math
+MAGMA_HOME ?= /ictstr01/home/haicu/titouan.breton/micromamba/envs/magma-qr
+MAGMA_CFLAGS ?= -I$(MAGMA_HOME)/include
+MAGMA_LDFLAGS ?= -L$(MAGMA_HOME)/lib
+LDLIBS ?= -lmagma -lcusolver -lcublas -lcusparse
+
+BUILD_DIR := build
+TARGET := $(BUILD_DIR)/bench_harness_profile_$(KERNEL)
+KERNEL_SRC := kernels/$(KERNEL).cu
+CORRECTNESS_TARGET := $(BUILD_DIR)/correctness_$(KERNEL)
+
+.PHONY: all correctness clean
+
+all: $(TARGET)
+
+$(TARGET): bench_harness_profile.cu qr_kernel.h $(KERNEL_SRC) | $(BUILD_DIR)
+	$(NVCC) $(NVCCFLAGS) -I. $(MAGMA_CFLAGS) bench_harness_profile.cu $(KERNEL_SRC) $(MAGMA_LDFLAGS) $(LDLIBS) -o $@
+
+correctness: $(CORRECTNESS_TARGET)
+
+$(CORRECTNESS_TARGET): correctness.cu qr_kernel.h $(KERNEL_SRC) | $(BUILD_DIR)
+	$(NVCC) $(NVCCFLAGS) -I. $(MAGMA_CFLAGS) correctness.cu $(KERNEL_SRC) $(MAGMA_LDFLAGS) $(LDLIBS) -o $@
+
+$(BUILD_DIR):
+	mkdir -p $(BUILD_DIR)
+
+clean:
+	rm -rf $(BUILD_DIR)

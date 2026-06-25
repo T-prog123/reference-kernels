@@ -1,0 +1,12 @@
+batch: 20; n: 32; cond: 1; seed: 43214
+batch: 40; n: 176; cond: 1; seed: 423011
+batch: 40; n: 352; cond: 1; seed: 123456
+batch: 640; n: 512; cond: 2; seed: 1029
+batch: 60; n: 1024; cond: 2; seed: 75342
+batch: 8; n: 2048; cond: 1; seed: 224466
+batch: 2; n: 4096; cond: 1; seed: 32412
+batch: 640; n: 512; cond: 2; case: mixed; seed: 83791
+batch: 60; n: 1024; cond: 2; case: mixed; seed: 91827
+batch: 640; n: 512; cond: 0; case: rankdef; seed: 55443
+batch: 640; n: 512; cond: 0; case: clustered; seed: 77321
+batch: 60; n: 1024; cond: 0; case: nearrank; seed: 99123

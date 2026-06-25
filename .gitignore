@@ -171,5 +171,13 @@ cython_debug/
 # Ruff stuff:
 .ruff_cache/
 
+# QR/local profiling artifacts
+problems/linalg/qr_v2/logs/
+problems/linalg/qr_v2_cuda/logs/
+problems/linalg/qr_v2_cuda/nsys_rep/
+*.nsys-rep
+*.ncu-rep
+*.qdrep
+
 # PyPI configuration file
 .pypirc
