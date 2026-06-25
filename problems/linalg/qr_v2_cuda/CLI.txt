@@ -1,0 +1,27 @@
+squeue -u "$USER"
+scancel -u "$USER"
+
+sbatch run_bench_h100.sh blocked_v8 quick
+sbatch run_bench_h100.sh blocked_v8 convergence
+sbatch run_bench_h100.sh blocked_v8 convergence dense_b640_n512_c2
+
+sbatch run_bench_harness_profile_h100.sh blocked_v8_profile aggregate
+sbatch run_bench_harness_profile_h100.sh blocked_v8_profile variance dense_b640_n512_c2
+
+sbatch run_bench_h100.sh cuBLAS convergence
+sbatch run_bench_harness_profile_h100.sh cuBLAS variance
+
+make profile KERNEL=blocked_v8 PROFILE=tiny
+make profile KERNEL=blocked_v8 PROFILE=small
+make profile KERNEL=blocked_v8 PROFILE=blocked
+
+nsys profile --capture-range=cudaProfilerApi --force-overwrite=true -o nsys_blocked build/profile_blocked
+nsys stats --force-export=true --report cuda_gpu_kern_sum nsys_blocked.nsys-rep
+ncu --profile-from-start off -o ncu_blocked build/profile_blocked
+
+sbatch run_ncu_h100.sh blocked_v8 blocked
+sbatch run_nsys_blocked_h100.sh blocked_v8 H
+sbatch diag_nsys_h100.sh
+
+nsys stats --force-export=true --report cuda_gpu_kern_sum nsys_rep/nsys_blocked_512_H.nsys-rep
+nsys stats --force-export=true --report cuda_gpu_kern_sum nsys_rep/nsys_blocked_4096_H.nsys-rep

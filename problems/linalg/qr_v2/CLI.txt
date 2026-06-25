@@ -1,0 +1,6 @@
+sbatch run_eval_h100.sh
+
+squeue -u "$USER"
+scancel -u "$USER"
+
+popcorn-cli submit --no-tui --leaderboard qr_v2 --gpu B200 --mode leaderboard submission.py
