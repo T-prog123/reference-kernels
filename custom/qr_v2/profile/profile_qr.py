@@ -1,9 +1,9 @@
 import argparse
+from pathlib import Path
+import sys
 
 import torch
 from torch.profiler import ProfilerActivity, profile, record_function
-
-from submission import custom_kernel
 
 
 BENCHMARK_SHAPES = (
@@ -27,7 +27,14 @@ def _sync() -> None:
     torch.cuda.synchronize()
 
 
-def _run_custom(data: torch.Tensor):
+def _load_custom_kernel(problem_dir: Path):
+    sys.path.insert(0, str(problem_dir))
+    from submission import custom_kernel
+
+    return custom_kernel
+
+
+def _run_custom(data: torch.Tensor, custom_kernel):
     with record_function("custom_kernel"):
         return custom_kernel(data)
 
@@ -84,10 +91,14 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=1234)
     parser.add_argument("--only-n", type=int, default=None)
     parser.add_argument("--skip-geqrf", action="store_true")
+    default_problem_dir = Path(__file__).resolve().parents[3] / "problems" / "linalg" / "qr_v2"
+    parser.add_argument("--problem-dir", type=Path, default=default_problem_dir)
     args = parser.parse_args()
 
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required for this profiler harness")
+
+    custom_kernel = _load_custom_kernel(args.problem_dir.resolve())
 
     shapes = _shape_filter(BENCHMARK_SHAPES, args.only_n)
     if not shapes:
@@ -98,7 +109,7 @@ def main() -> None:
 
         custom_prof = _profile_call(
             "custom_kernel",
-            _run_custom,
+            lambda tensor: _run_custom(tensor, custom_kernel),
             data,
             warmup=args.warmup,
             repeat=args.repeat,

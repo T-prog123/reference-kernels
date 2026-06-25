@@ -1,7 +1,8 @@
 # qr_v2_cuda
 
 Native CUDA workspace for developing QR kernels before packaging one into
-`../qr_v2/submission.py`.
+the upstream evaluator at `problems/linalg/qr_v2/submission.py` or into one of
+the archived custom submissions under `custom/qr_v2/submissions/`.
 
 This directory is for H100-side development. The final Popcorn target is B200,
 so use these numbers as relative guidance, not absolute leaderboard truth.
