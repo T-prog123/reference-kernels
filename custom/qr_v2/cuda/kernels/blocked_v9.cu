@@ -257,11 +257,16 @@ __global__ void panel_factor_kernel_float(
     float* taub = tau + static_cast<size_t>(b) * n;
     float* Vb = V + static_cast<size_t>(b) * n * kPanelSize;
 
+    // Factor the current panel one column at a time. Each iteration builds one
+    // Householder reflector, stores it below the diagonal in A, then applies it
+    // to the remaining columns of this panel.
     for (int j = 0; j < ib; ++j) {
         int col = k + j;
         int row0 = k + j;
         int len = h - j;
 
+        // Compute ||x_tail||^2 for the active column. In v9 A is row-major, so
+        // this walks a column with stride n.
         float local_norm2 = 0.0f;
         for (int r = tx + 1; r < len; r += blockDim.x) {
             float v = Ab[static_cast<size_t>(row0 + r) * n + col];
@@ -269,6 +274,8 @@ __global__ void panel_factor_kernel_float(
         }
         float xnorm2 = block_sum(local_norm2, scratch);
 
+        // Thread 0 computes the scalar Householder parameters and overwrites
+        // the diagonal entry with beta.
         if (tx == 0) {
             float* x0 = Ab + static_cast<size_t>(row0) * n + col;
             float alpha = *x0;
@@ -290,6 +297,8 @@ __global__ void panel_factor_kernel_float(
         }
         __syncthreads();
 
+        // Scale the tail of the current column so the implicit reflector is
+        // v = [1, A(row0+1:, col)].
         if (tau_s != 0.0f) {
             for (int r = tx + 1; r < len; r += blockDim.x) {
                 Ab[static_cast<size_t>(row0 + r) * n + col] *= scale_s;
@@ -299,6 +308,8 @@ __global__ void panel_factor_kernel_float(
 
         int ncols = ib - j - 1;
         if (ncols > 0) {
+            // Apply the new reflector to the rest of this panel before moving
+            // to the next panel column.
             int tpc = panel_threads_per_column(ncols);
             int active_threads = tpc * ncols;
             int group = tx / tpc;
@@ -349,6 +360,8 @@ __global__ void panel_factor_kernel_float(
         }
     }
 
+    // Build the explicit V block used by the later WY/BLAS trailing update.
+    // The reflectors remain stored compactly in A; V is the dense panel view.
     int total_v = h * ib;
     for (int idx = tx; idx < total_v; idx += blockDim.x) {
         int col = idx / h;
