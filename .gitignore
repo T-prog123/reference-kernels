@@ -179,7 +179,6 @@ custom/qr_v2/logs/
 custom/qr_v2/cuda/build/
 custom/qr_v2/cuda/logs/
 custom/qr_v2/cuda/nsys_rep/
-custom/**/*.sh
 *.nsys-rep
 *.ncu-rep
 *.qdrep
