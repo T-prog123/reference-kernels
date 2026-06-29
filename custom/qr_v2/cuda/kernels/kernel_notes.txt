@@ -1,0 +1,5 @@
+v8: custom implementation baseline based on blocked QR, with 3 paths for very small,
+small and other matrices. for the "other/blocked" third path, for large matrices, we make sure
+multiple blocks are used during pannel factorization
+
+v9: delete the matrix transpotion steps, which were implemented so we coudl use cublass
