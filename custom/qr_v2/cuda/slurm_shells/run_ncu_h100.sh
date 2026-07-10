@@ -12,7 +12,7 @@
 
 set -euo pipefail
 
-CUDA_DIR="${CUDA_DIR:-/home/haicu/titouan.breton/reference-kernels/custom/qr_v2/cuda}"
+CUDA_DIR="${CUDA_DIR:-/home/haicu/titouan.breton/holder/reference-kernels/custom/qr_v2/cuda}"
 cd "${CUDA_DIR}"
 
 KERNEL="${1:-blocked_v8}"

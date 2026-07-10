@@ -21,15 +21,6 @@ constexpr int kMultiBlockPanelMinHeight = 1024;
 constexpr int kMultiBlockPanelMaxBatch = 8;
 constexpr int kTinySinglePanelCutoff = kPanelSize;
 constexpr int kSmallNoTCutoff = 256;
-constexpr int kSharedPanelMaxDynamicBytes = 160 * 1024;
-
-enum class cublas_gemm_mode {
-    fp32_current,
-    fp32_tf32,
-    fp32_fast_bf16
-};
-
-constexpr cublas_gemm_mode kCublasGemmMode = cublas_gemm_mode::fp32_fast_bf16;
 
 enum class qr_path {
     tiny_single_panel,
@@ -45,13 +36,6 @@ qr_path choose_qr_path(int n) {
         return qr_path::small_no_t;
     }
     return qr_path::blocked_cublas;
-}
-
-int panel_width_for_n(int n) {
-    if (n >= 5120) return 4;
-    if (n >= 2560) return 8;
-    if (n >= 1280) return 16;
-    return kPanelSize;
 }
 
 template <typename>
@@ -265,7 +249,6 @@ __global__ void panel_factor_kernel_float(
     __shared__ float tau_s;
     __shared__ float scale_s;
     __shared__ float dot_s[kPanelSize];
-    extern __shared__ float panel_s[];
 
     int b = blockIdx.x;
     int tx = threadIdx.x;
@@ -274,27 +257,19 @@ __global__ void panel_factor_kernel_float(
     float* taub = tau + static_cast<size_t>(b) * n;
     float* Vb = V + static_cast<size_t>(b) * n * kPanelSize;
 
-    int panel_ld = h + 1;
-    int total_panel = h * ib;
-    for (int idx = tx; idx < total_panel; idx += blockDim.x) {
-        int row = idx / ib;
-        int col = idx - row * ib;
-        panel_s[static_cast<size_t>(col) * panel_ld + row] =
-            Ab[static_cast<size_t>(k + row) * n + (k + col)];
-    }
-    __syncthreads();
-
     // Factor the current panel one column at a time. Each iteration builds one
     // Householder reflector, stores it below the diagonal in A, then applies it
     // to the remaining columns of this panel.
     for (int j = 0; j < ib; ++j) {
         int col = k + j;
+        int row0 = k + j;
         int len = h - j;
 
-        // Compute ||x_tail||^2 from the column-first shared panel.
+        // Compute ||x_tail||^2 for the active column. In v9 A is row-major, so
+        // this walks a column with stride n.
         float local_norm2 = 0.0f;
         for (int r = tx + 1; r < len; r += blockDim.x) {
-            float v = panel_s[static_cast<size_t>(j) * panel_ld + (j + r)];
+            float v = Ab[static_cast<size_t>(row0 + r) * n + col];
             local_norm2 += v * v;
         }
         float xnorm2 = block_sum(local_norm2, scratch);
@@ -302,7 +277,8 @@ __global__ void panel_factor_kernel_float(
         // Thread 0 computes the scalar Householder parameters and overwrites
         // the diagonal entry with beta.
         if (tx == 0) {
-            float alpha = panel_s[static_cast<size_t>(j) * panel_ld + j];
+            float* x0 = Ab + static_cast<size_t>(row0) * n + col;
+            float alpha = *x0;
             float tau_val = 0.0f;
             float scale = 0.0f;
             float beta = alpha;
@@ -314,7 +290,7 @@ __global__ void panel_factor_kernel_float(
                 scale = 1.0f / (alpha - beta);
             }
 
-            panel_s[static_cast<size_t>(j) * panel_ld + j] = beta;
+            *x0 = beta;
             taub[col] = tau_val;
             tau_s = tau_val;
             scale_s = scale;
@@ -325,7 +301,7 @@ __global__ void panel_factor_kernel_float(
         // v = [1, A(row0+1:, col)].
         if (tau_s != 0.0f) {
             for (int r = tx + 1; r < len; r += blockDim.x) {
-                panel_s[static_cast<size_t>(j) * panel_ld + (j + r)] *= scale_s;
+                Ab[static_cast<size_t>(row0 + r) * n + col] *= scale_s;
             }
         }
         __syncthreads();
@@ -341,14 +317,14 @@ __global__ void panel_factor_kernel_float(
             float local_dot = 0.0f;
 
             if (tx < active_threads) {
-                int update_col = j + 1 + group;
+                int update_col = k + j + 1 + group;
                 local_dot = (lane == 0)
-                    ? panel_s[static_cast<size_t>(update_col) * panel_ld + j]
+                    ? Ab[static_cast<size_t>(row0) * n + update_col]
                     : 0.0f;
                 for (int r = lane + 1; r < len; r += tpc) {
-                    int row = j + r;
-                    local_dot += panel_s[static_cast<size_t>(j) * panel_ld + row] *
-                                 panel_s[static_cast<size_t>(update_col) * panel_ld + row];
+                    int row = row0 + r;
+                    local_dot += Ab[static_cast<size_t>(row) * n + col] *
+                                 Ab[static_cast<size_t>(row) * n + update_col];
                 }
             }
             scratch[tx] = local_dot;
@@ -371,26 +347,17 @@ __global__ void panel_factor_kernel_float(
                 for (int idx = tx; idx < total_update; idx += blockDim.x) {
                     int local_col = idx / len;
                     int r = idx - local_col * len;
-                    int row = j + r;
-                    int update_col = j + 1 + local_col;
+                    int row = row0 + r;
+                    int update_col = k + j + 1 + local_col;
                     float v = (r == 0)
                         ? 1.0f
-                        : panel_s[static_cast<size_t>(j) * panel_ld + row];
-                    panel_s[static_cast<size_t>(update_col) * panel_ld + row] -=
+                        : Ab[static_cast<size_t>(row) * n + col];
+                    Ab[static_cast<size_t>(row) * n + update_col] -=
                         v * dot_s[local_col];
                 }
             }
             __syncthreads();
         }
-    }
-
-    __syncthreads();
-
-    for (int idx = tx; idx < total_panel; idx += blockDim.x) {
-        int row = idx / ib;
-        int col = idx - row * ib;
-        Ab[static_cast<size_t>(k + row) * n + (k + col)] =
-            panel_s[static_cast<size_t>(col) * panel_ld + row];
     }
 
     // Build the explicit V block used by the later WY/BLAS trailing update.
@@ -403,22 +370,10 @@ __global__ void panel_factor_kernel_float(
         if (row == col) {
             value = 1.0f;
         } else if (row > col) {
-            value = panel_s[static_cast<size_t>(col) * panel_ld + row];
+            value = Ab[static_cast<size_t>(k + row) * n + (k + col)];
         }
         Vb[row + static_cast<size_t>(col) * n] = value;
     }
-}
-
-size_t panel_factor_dynamic_shared_bytes(int n, int k, int ib) {
-    int h = n - k;
-    return static_cast<size_t>(ib) * (h + 1) * sizeof(float);
-}
-
-void configure_panel_factor_dynamic_shared() {
-    CHECK_CUDA_LOCAL(cudaFuncSetAttribute(
-        panel_factor_kernel_float,
-        cudaFuncAttributeMaxDynamicSharedMemorySize,
-        kSharedPanelMaxDynamicBytes));
 }
 
 __global__ void panel_factor_multiblock_kernel_float(
@@ -625,8 +580,7 @@ void launch_panel_factor(
         if (coop_err == cudaErrorCooperativeLaunchTooLarge ||
             coop_err == cudaErrorNotSupported) {
             (void)cudaGetLastError();
-            size_t shared_bytes = panel_factor_dynamic_shared_bytes(n, k, ib);
-            panel_factor_kernel_float<<<batch, kPanelThreads, shared_bytes>>>(
+            panel_factor_kernel_float<<<batch, kPanelThreads>>>(
                 A, tau, V, n, k, ib);
             CHECK_CUDA_LOCAL(cudaGetLastError());
         } else {
@@ -634,8 +588,7 @@ void launch_panel_factor(
             CHECK_CUDA_LOCAL(cudaGetLastError());
         }
     } else {
-        size_t shared_bytes = panel_factor_dynamic_shared_bytes(n, k, ib);
-        panel_factor_kernel_float<<<batch, kPanelThreads, shared_bytes>>>(
+        panel_factor_kernel_float<<<batch, kPanelThreads>>>(
             A, tau, V, n, k, ib);
         CHECK_CUDA_LOCAL(cudaGetLastError());
     }
@@ -652,7 +605,6 @@ __global__ void direct_reflector_update_kernel(
 {
     __shared__ float scratch[kPanelThreads];
     __shared__ float dot_s[kDirectUpdateTileCols];
-    __shared__ float tile_s[kDirectUpdateTileCols * (kSmallNoTCutoff + 1)];
 
     int b = blockIdx.x;
     int tile = blockIdx.y;
@@ -670,17 +622,6 @@ __global__ void direct_reflector_update_kernel(
     float* Ab = A + static_cast<size_t>(b) * n * n;
     const float* taub = tau + static_cast<size_t>(b) * n + k;
     const float* Vb = V + static_cast<size_t>(b) * n * kPanelSize;
-    int tile_ld = h + 1;
-    int total_tile = h * ncols;
-
-    for (int idx = tx; idx < total_tile; idx += blockDim.x) {
-        int row = idx / ncols;
-        int local_col = idx - row * ncols;
-        int update_col = col_start + local_col;
-        tile_s[static_cast<size_t>(local_col) * tile_ld + row] =
-            Ab[static_cast<size_t>(k + row) * n + update_col];
-    }
-    __syncthreads();
 
     for (int j = 0; j < ib; ++j) {
         int len = h - j;
@@ -692,10 +633,12 @@ __global__ void direct_reflector_update_kernel(
         float local_dot = 0.0f;
 
         if (tau_j != 0.0f && tx < active_threads) {
+            int update_col = col_start + group;
+            const float* c = Ab + static_cast<size_t>(k + j) * n + update_col;
             for (int r = lane; r < len; r += tpc) {
                 int vrow = j + r;
                 local_dot += Vb[vrow + static_cast<size_t>(j) * n] *
-                             tile_s[static_cast<size_t>(group) * tile_ld + vrow];
+                             c[static_cast<size_t>(r) * n];
             }
         }
         scratch[tx] = local_dot;
@@ -718,20 +661,14 @@ __global__ void direct_reflector_update_kernel(
             for (int idx = tx; idx < total_update; idx += blockDim.x) {
                 int local_col = idx / len;
                 int r = idx - local_col * len;
+                int update_col = col_start + local_col;
                 int vrow = j + r;
-                tile_s[static_cast<size_t>(local_col) * tile_ld + vrow] -=
+                float* c = Ab + static_cast<size_t>(k + j) * n + update_col;
+                c[static_cast<size_t>(r) * n] -=
                     Vb[vrow + static_cast<size_t>(j) * n] * dot_s[local_col];
             }
         }
         __syncthreads();
-    }
-
-    for (int idx = tx; idx < total_tile; idx += blockDim.x) {
-        int row = idx / ncols;
-        int local_col = idx - row * ncols;
-        int update_col = col_start + local_col;
-        Ab[static_cast<size_t>(k + row) * n + update_col] =
-            tile_s[static_cast<size_t>(local_col) * tile_ld + row];
     }
 }
 
@@ -753,68 +690,6 @@ void apply_direct_reflectors(
     direct_reflector_update_kernel<<<grid, kPanelThreads>>>(
         A, tau, V, n, k, ib);
     CHECK_CUDA_LOCAL(cudaGetLastError());
-}
-
-bool use_cublas_gemm_ex() {
-    return kCublasGemmMode != cublas_gemm_mode::fp32_current;
-}
-
-cublasComputeType_t cublas_compute_type() {
-    if (kCublasGemmMode == cublas_gemm_mode::fp32_tf32) {
-        return CUBLAS_COMPUTE_32F_FAST_TF32;
-    }
-    if (kCublasGemmMode == cublas_gemm_mode::fp32_fast_bf16) {
-        return CUBLAS_COMPUTE_32F_FAST_16BF;
-    }
-    return CUBLAS_COMPUTE_32F;
-}
-
-void cublas_gemm_strided_batched_fp32(
-    cublasHandle_t handle,
-    cublasOperation_t transa,
-    cublasOperation_t transb,
-    int m,
-    int n,
-    int k,
-    const float* alpha,
-    const float* A,
-    int lda,
-    long long stride_A,
-    const float* B,
-    int ldb,
-    long long stride_B,
-    const float* beta,
-    float* C,
-    int ldc,
-    long long stride_C,
-    int batch)
-{
-    if (!use_cublas_gemm_ex()) {
-        CHECK_CUBLAS_LOCAL(cublasSgemmStridedBatched(
-            handle,
-            transa, transb,
-            m, n, k,
-            alpha,
-            A, lda, stride_A,
-            B, ldb, stride_B,
-            beta,
-            C, ldc, stride_C,
-            batch));
-        return;
-    }
-
-    CHECK_CUBLAS_LOCAL(cublasGemmStridedBatchedEx(
-        handle,
-        transa, transb,
-        m, n, k,
-        alpha,
-        A, CUDA_R_32F, lda, stride_A,
-        B, CUDA_R_32F, ldb, stride_B,
-        beta,
-        C, CUDA_R_32F, ldc, stride_C,
-        batch,
-        cublas_compute_type(),
-        CUBLAS_GEMM_DEFAULT_TENSOR_OP));
 }
 
 // Kernel to build the small triangular T matrix for blocked update.
@@ -875,7 +750,7 @@ void build_T_via_gram(
     const long long stride_V = static_cast<long long>(n) * kPanelSize;
     const long long stride_G = static_cast<long long>(kPanelSize) * kPanelSize;
 
-    cublas_gemm_strided_batched_fp32(
+    CHECK_CUBLAS_LOCAL(cublasSgemmStridedBatched(
         handle,
         CUBLAS_OP_T, CUBLAS_OP_N,
         ib, ib, h,
@@ -884,7 +759,7 @@ void build_T_via_gram(
         V, n, stride_V,
         &zero,
         G, kPanelSize, stride_G,
-        batch);
+        batch));
 
     build_T_from_gram_kernel_float<<<batch, kBlockSize>>>(
         G, tau, T, n, k, ib);
@@ -922,7 +797,7 @@ void trailing_update(
     float* C = A + static_cast<size_t>(k) * n + (k + ib);
 
     // W^T = C^T V. W is row-major ib x t, viewed by cuBLAS as column-major t x ib.
-    cublas_gemm_strided_batched_fp32(
+    CHECK_CUBLAS_LOCAL(cublasSgemmStridedBatched(
         handle,
         CUBLAS_OP_N, CUBLAS_OP_N,
         t, ib, h,
@@ -931,10 +806,10 @@ void trailing_update(
         V, n, stride_V,
         &zero,
         W, n, stride_W,
-        batch);
+        batch));
 
     // W2^T = W^T T, equivalent to W2 = T^T W.
-    cublas_gemm_strided_batched_fp32(
+    CHECK_CUBLAS_LOCAL(cublasSgemmStridedBatched(
         handle,
         CUBLAS_OP_N, CUBLAS_OP_N,
         t, ib, ib,
@@ -943,10 +818,10 @@ void trailing_update(
         T, kPanelSize, stride_T,
         &zero,
         W2, n, stride_W,
-        batch);
+        batch));
 
     // C^T <- C^T - W2^T V^T, equivalent to C <- C - V W2.
-    cublas_gemm_strided_batched_fp32(
+    CHECK_CUBLAS_LOCAL(cublasSgemmStridedBatched(
         handle,
         CUBLAS_OP_N, CUBLAS_OP_T,
         t, h, ib,
@@ -955,7 +830,7 @@ void trailing_update(
         V, n, stride_V,
         &one,
         C, n, stride_A,
-        batch);
+        batch));
 }
 
 void blocked_qr_small_no_t(
@@ -969,20 +844,16 @@ void blocked_qr_small_no_t(
     CHECK_CUDA_LOCAL(cudaMalloc(&V, static_cast<size_t>(batch) * n * kPanelSize * sizeof(float)));
 
     copy_row_major_input(Arow, Hrow, batch, n);
-    configure_panel_factor_dynamic_shared();
 
-    int panel_width = panel_width_for_n(n);
-    for (int k = 0; k < n;) {
-        int ib = (n - k < panel_width) ? (n - k) : panel_width;
-        size_t shared_bytes = panel_factor_dynamic_shared_bytes(n, k, ib);
-        panel_factor_kernel_float<<<batch, kPanelThreads, shared_bytes>>>(
+    for (int k = 0; k < n; k += kPanelSize) {
+        int ib = (n - k < kPanelSize) ? (n - k) : kPanelSize;
+        panel_factor_kernel_float<<<batch, kPanelThreads>>>(
             Hrow, tau, V, n, k, ib);
         CHECK_CUDA_LOCAL(cudaGetLastError());
 
         if (n - k - ib > 0) {
             apply_direct_reflectors(Hrow, tau, V, batch, n, k, ib);
         }
-        k += ib;
     }
 
     CHECK_CUDA_LOCAL(cudaFree(V));
@@ -1025,9 +896,7 @@ void blocked_wy_qr_cublas(
 
     cublasHandle_t handle = nullptr;
     CHECK_CUBLAS_LOCAL(cublasCreate(&handle));
-    configure_panel_factor_dynamic_shared();
 
-    // loop over the pannels, K being the pannel index
     for (int k = 0; k < n; k += kPanelSize) {
         int ib = (n - k < kPanelSize) ? (n - k) : kPanelSize;
         launch_panel_factor(

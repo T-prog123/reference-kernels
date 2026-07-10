@@ -12,7 +12,7 @@
 
 set -euo pipefail
 
-CUDA_DIR="${CUDA_DIR:-/home/haicu/titouan.breton/reference-kernels/custom/qr_v2/cuda}"
+CUDA_DIR="${CUDA_DIR:-/home/haicu/titouan.breton/holder/reference-kernels/custom/qr_v2/cuda}"
 cd "${CUDA_DIR}"
 
 KERNEL="${1:-blocked_v8}"
@@ -58,12 +58,28 @@ run_case() {
         PROFILE_FLAGS="-DPROFILE_BLOCKED_CASE=${case_n}" \
         PROFILE_OUT="${binary}"
 
+    set +e
     "${NSYS}" profile \
         --capture-range=cudaProfilerApi \
         --force-overwrite=true \
         -o "${report}" \
         "./build/${binary}"
+    local profile_status=$?
+    set -e
+    echo "nsys_profile_exit_code: ${profile_status}"
+
+    if [[ -f "${report}.nsys-rep" ]]; then
+        echo "stats: ${report}.nsys-rep"
+        "${NSYS}" stats \
+            --force-export=true \
+            --report cuda_gpu_kern_sum \
+            "${report}.nsys-rep"
+    else
+        echo "error: missing report ${report}.nsys-rep" >&2
+        return "${profile_status}"
+    fi
+
+    return "${profile_status}"
 }
 
 run_case 512
-run_case 4096
