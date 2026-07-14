@@ -7,10 +7,8 @@
 notes/runs/
 
 # Versioned submission snapshots: attempts (every idea) and winners (geomean
-# improvers). Potentially hundreds of large, heavily-commented files — we don't
-# publish them. The dir READMEs stay tracked so the structure + rules persist.
-attempts/*.py
-winners/*.py
+# improvers) ARE tracked — we want the kernel code in git history (the Attempts-log
+# links in design.md point at these files, so a clone must have them).
 
 # The active working kernel `submission.py` (project root) is intentionally NOT
 # ignored — it's the single current file and worth tracking in git history.
