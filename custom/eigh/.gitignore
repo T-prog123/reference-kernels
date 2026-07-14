@@ -1,0 +1,26 @@
+# custom/eigh — keep the repo lean. The durable record is the ledger + design notes;
+# the raw artifacts and the many versioned snapshots are regenerable/local-only.
+
+# Benchmark run artifacts: per-attempt JSON results and full stdout/stderr logs.
+# Can be one per run — hundreds over a long grind. The numbers that matter are
+# distilled into notes/experiments.md, which IS tracked.
+notes/runs/
+
+# Versioned submission snapshots: attempts (every idea) and winners (geomean
+# improvers). Potentially hundreds of large, heavily-commented files — we don't
+# publish them. The dir READMEs stay tracked so the structure + rules persist.
+attempts/*.py
+winners/*.py
+
+# The active working kernel `submission.py` (project root) is intentionally NOT
+# ignored — it's the single current file and worth tracking in git history.
+
+# Profiling artifacts under winners/ (large ncu/nsys exports: .zip/.csv/.txt).
+# Regenerable and not published; only the distilled numbers in notes/ are tracked.
+# winners/README.md (.md) and the tracked winners/*.py rule above are unaffected.
+winners/**/*.zip
+winners/**/*.csv
+winners/**/*.txt
+
+# macOS noise
+.DS_Store
