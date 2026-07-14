@@ -8,6 +8,11 @@ if ! git diff --quiet || ! git diff --cached --quiet; then
 fi
 
 echo "Fetching remotes..."
+
+if ! git remote get-url upstream >/dev/null 2>&1; then
+  git remote add upstream git@github.com:gpu-mode/reference-kernels.git
+fi
+
 git fetch origin
 git fetch upstream
 
